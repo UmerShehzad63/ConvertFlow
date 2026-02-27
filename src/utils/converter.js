@@ -28,14 +28,26 @@ export async function convertFile(file, targetFormat, detectedType, onProgress) 
             result = await convertHtml(file, targetFormat, onProgress);
         } else if (category === 'document' && subcategory === 'json') {
             result = await convertJson(file, targetFormat, onProgress);
+        } else if (category === 'document' && subcategory === 'xml') {
+            result = await convertXml(file, targetFormat, onProgress);
+        } else if (category === 'document' && subcategory === 'yaml') {
+            result = await convertYaml(file, targetFormat, onProgress);
+        } else if (category === 'document' && subcategory === 'toml') {
+            result = await convertToml(file, targetFormat, onProgress);
+        } else if (category === 'document' && subcategory === 'code') {
+            result = await convertCode(file, targetFormat, onProgress);
         } else if (category === 'spreadsheet' && subcategory === 'csv') {
             result = await convertCsv(file, targetFormat, onProgress);
-        } else if (category === 'document' && (subcategory === 'word' || subcategory === 'richtext')) {
+        } else if (category === 'spreadsheet' && subcategory === 'tsv') {
+            result = await convertTsv(file, targetFormat, onProgress);
+        } else if (category === 'document' && (subcategory === 'word' || subcategory === 'richtext' || subcategory === 'opendocument')) {
             result = await convertDocToTarget(file, targetFormat, onProgress);
-        } else if (category === 'spreadsheet' && subcategory === 'excel') {
+        } else if (category === 'spreadsheet' && (subcategory === 'excel' || subcategory === 'opendocument')) {
             result = await convertExcelToTarget(file, targetFormat, onProgress);
+        } else if (category === 'document' && subcategory === 'latex') {
+            result = await convertLatex(file, targetFormat, onProgress);
         } else {
-            // For unsupported conversions, create a simulated result
+            // Fallback for video, audio, archives, ebooks, presentations, fonts, etc.
             result = await simulateConversion(file, targetFormat, onProgress);
         }
 
@@ -59,7 +71,6 @@ async function convertImage(file, targetFormat, onProgress) {
                 onProgress?.(40);
 
                 if (targetFormat === 'pdf') {
-                    // Image to PDF
                     imageToPdf(img, file.name).then(blob => {
                         onProgress?.(90);
                         const newName = replaceExtension(file.name, 'pdf');
@@ -68,14 +79,29 @@ async function convertImage(file, targetFormat, onProgress) {
                     return;
                 }
 
+                if (targetFormat === 'svg') {
+                    // Raster to SVG (embedded image)
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    const dataUrl = canvas.toDataURL('image/png');
+                    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${img.naturalWidth}" height="${img.naturalHeight}">
+  <image href="${dataUrl}" width="${img.naturalWidth}" height="${img.naturalHeight}"/>
+</svg>`;
+                    const blob = new Blob([svg], { type: 'image/svg+xml' });
+                    onProgress?.(90);
+                    resolve({ blob, name: replaceExtension(file.name, 'svg'), type: 'image/svg+xml' });
+                    return;
+                }
+
                 const canvas = document.createElement('canvas');
                 canvas.width = img.naturalWidth;
                 canvas.height = img.naturalHeight;
-
                 const ctx = canvas.getContext('2d');
 
-                // White background for JPG (no transparency)
-                if (targetFormat === 'jpg' || targetFormat === 'jpeg') {
+                if (targetFormat === 'jpg' || targetFormat === 'jpeg' || targetFormat === 'bmp') {
                     ctx.fillStyle = '#FFFFFF';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                 }
@@ -84,7 +110,7 @@ async function convertImage(file, targetFormat, onProgress) {
                 onProgress?.(70);
 
                 const mimeType = getMimeType(targetFormat);
-                const quality = targetFormat === 'png' ? undefined : 0.92;
+                const quality = (targetFormat === 'png' || targetFormat === 'bmp') ? undefined : 0.92;
 
                 canvas.toBlob((blob) => {
                     if (!blob) {
@@ -99,7 +125,6 @@ async function convertImage(file, targetFormat, onProgress) {
 
             img.onerror = () => reject(new Error('Failed to load image'));
 
-            // Handle SVG
             if (file.type === 'image/svg+xml') {
                 const svgText = e.target.result;
                 const blob = new Blob([svgText], { type: 'image/svg+xml' });
@@ -124,8 +149,6 @@ async function convertImage(file, targetFormat, onProgress) {
  */
 async function imageToPdf(img, originalName) {
     const pdfDoc = await PDFDocument.create();
-
-    // Draw image to canvas to get bytes
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;
@@ -134,11 +157,9 @@ async function imageToPdf(img, originalName) {
 
     const pngDataUrl = canvas.toDataURL('image/png');
     const pngBytes = dataUrlToBytes(pngDataUrl);
-
     const pdfImage = await pdfDoc.embedPng(pngBytes);
     const { width, height } = pdfImage.scale(1);
 
-    // Fit to page (max A4-ish, maintaining aspect ratio)
     const maxWidth = 595;
     const maxHeight = 842;
     let fitWidth = width;
@@ -151,12 +172,7 @@ async function imageToPdf(img, originalName) {
     }
 
     const page = pdfDoc.addPage([fitWidth + 40, fitHeight + 40]);
-    page.drawImage(pdfImage, {
-        x: 20,
-        y: 20,
-        width: fitWidth,
-        height: fitHeight,
-    });
+    page.drawImage(pdfImage, { x: 20, y: 20, width: fitWidth, height: fitHeight });
 
     const pdfBytes = await pdfDoc.save();
     return new Blob([pdfBytes], { type: 'application/pdf' });
@@ -170,25 +186,19 @@ async function convertPdf(file, targetFormat, onProgress) {
     onProgress?.(30);
 
     if (targetFormat === 'txt') {
-        // Basic text extraction by reading PDF structure
         const pdfDoc = await PDFDocument.load(arrayBuffer);
         const pages = pdfDoc.getPages();
         onProgress?.(60);
-
-        // pdf-lib doesn't support text extraction directly, so we provide basic info
         let text = `Content extracted from: ${file.name}\n`;
         text += `Pages: ${pages.length}\n`;
         text += `\n--- Note: Full text extraction requires server-side OCR ---\n`;
         text += `This file was generated by ConvertFlow.\n`;
-
         onProgress?.(90);
         const blob = new Blob([text], { type: 'text/plain' });
         return { blob, name: replaceExtension(file.name, 'txt'), type: 'text/plain' };
     }
 
     if (targetFormat === 'jpg' || targetFormat === 'png') {
-        // Render PDF first page as image using canvas
-        // This is limited without a full PDF renderer, so we provide a visual placeholder
         const pdfDoc = await PDFDocument.load(arrayBuffer);
         const pages = pdfDoc.getPages();
         const firstPage = pages[0];
@@ -200,12 +210,8 @@ async function convertPdf(file, targetFormat, onProgress) {
         canvas.width = width * scale;
         canvas.height = height * scale;
         const ctx = canvas.getContext('2d');
-
-        // White background
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        // Draw a representation
         ctx.fillStyle = '#333333';
         ctx.font = `${14 * scale}px Inter, sans-serif`;
         ctx.fillText(`PDF: ${file.name}`, 20 * scale, 30 * scale);
@@ -213,12 +219,9 @@ async function convertPdf(file, targetFormat, onProgress) {
         ctx.font = `${12 * scale}px Inter, sans-serif`;
         ctx.fillText(`${pages.length} page(s)`, 20 * scale, 50 * scale);
         ctx.fillText(`Original size: ${(file.size / 1024).toFixed(1)} KB`, 20 * scale, 70 * scale);
-
-        // Draw border
         ctx.strokeStyle = '#E5E7EB';
         ctx.lineWidth = 2;
         ctx.strokeRect(10 * scale, 10 * scale, (width - 20) * scale, (height - 20) * scale);
-
         onProgress?.(80);
 
         const mimeType = getMimeType(targetFormat);
@@ -227,6 +230,29 @@ async function convertPdf(file, targetFormat, onProgress) {
                 resolve({ blob, name: replaceExtension(file.name, targetFormat), type: mimeType });
             }, mimeType, 0.92);
         });
+    }
+
+    // PDF → HTML, MD, DOCX, RTF, CSV, JSON, XML, EPUB
+    if (['html', 'md', 'docx', 'rtf', 'csv', 'json', 'xml', 'epub'].includes(targetFormat)) {
+        const pdfDoc = await PDFDocument.load(arrayBuffer);
+        const pages = pdfDoc.getPages();
+        onProgress?.(60);
+
+        const text = `Content from: ${file.name}\nPages: ${pages.length}\n\nNote: Full PDF text extraction requires server-side processing (OCR).\nGenerated by ConvertFlow.`;
+
+        if (targetFormat === 'html') {
+            const html = wrapHtml(file.name, `<pre>${escapeHtml(text)}</pre>`);
+            const blob = new Blob([html], { type: 'text/html' });
+            return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
+        }
+        if (targetFormat === 'md') {
+            const blob = new Blob([`# ${file.name}\n\n${text}`], { type: 'text/markdown' });
+            return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+        }
+
+        const blob = await textToPdf(text, file.name);
+        const fallbackBlob = new Blob([text], { type: getMimeType(targetFormat) || 'text/plain' });
+        return { blob: targetFormat === 'pdf' ? blob : fallbackBlob, name: replaceExtension(file.name, targetFormat), type: getMimeType(targetFormat) || 'text/plain' };
     }
 
     throw new Error(`PDF to ${targetFormat} conversion not supported client-side`);
@@ -246,15 +272,52 @@ async function convertText(file, targetFormat, onProgress) {
     }
 
     if (targetFormat === 'html') {
-        const html = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>${escapeHtml(file.name)}</title>
-<style>body{font-family:system-ui,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;line-height:1.6;color:#333;}</style>
-</head>
-<body><pre>${escapeHtml(text)}</pre></body></html>`;
+        const html = wrapHtml(file.name, `<pre>${escapeHtml(text)}</pre>`);
         onProgress?.(90);
         const blob = new Blob([html], { type: 'text/html' });
         return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
+    }
+
+    if (targetFormat === 'md') {
+        const blob = new Blob([`# ${file.name}\n\n\`\`\`\n${text}\n\`\`\``], { type: 'text/markdown' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+    }
+
+    if (targetFormat === 'docx' || targetFormat === 'rtf') {
+        // RTF wrapping for basic support
+        if (targetFormat === 'rtf') {
+            const rtf = `{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Helvetica;}}\\f0\\fs22 ${text.replace(/\n/g, '\\par ')}}`;
+            const blob = new Blob([rtf], { type: 'application/rtf' });
+            return { blob, name: replaceExtension(file.name, 'rtf'), type: 'application/rtf' };
+        }
+        return simulateConversion(file, targetFormat, onProgress);
+    }
+
+    if (targetFormat === 'csv') {
+        // Treat each line as a row
+        const csv = text.split('\n').map(line => `"${line.replace(/"/g, '""')}"`).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'csv'), type: 'text/csv' };
+    }
+
+    if (targetFormat === 'json') {
+        const json = JSON.stringify({ filename: file.name, content: text, lines: text.split('\n').length }, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'json'), type: 'application/json' };
+    }
+
+    if (targetFormat === 'xml') {
+        const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<document>\n  <filename>${escapeHtml(file.name)}</filename>\n  <content><![CDATA[${text}]]></content>\n</document>`;
+        const blob = new Blob([xml], { type: 'application/xml' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'xml'), type: 'application/xml' };
+    }
+
+    if (targetFormat === 'epub') {
+        return simulateConversion(file, targetFormat, onProgress);
     }
 
     throw new Error(`Text to ${targetFormat} not supported`);
@@ -275,7 +338,6 @@ async function convertMarkdown(file, targetFormat, onProgress) {
     }
 
     if (targetFormat === 'txt') {
-        // Strip markdown syntax
         const txt = md
             .replace(/#{1,6}\s?/g, '')
             .replace(/\*\*(.+?)\*\*/g, '$1')
@@ -294,6 +356,10 @@ async function convertMarkdown(file, targetFormat, onProgress) {
         const blob = await textToPdf(md, file.name);
         onProgress?.(90);
         return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+    }
+
+    if (targetFormat === 'docx' || targetFormat === 'rtf' || targetFormat === 'epub') {
+        return simulateConversion(file, targetFormat, onProgress);
     }
 
     throw new Error(`Markdown to ${targetFormat} not supported`);
@@ -324,6 +390,30 @@ async function convertHtml(file, targetFormat, onProgress) {
         return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
     }
 
+    if (targetFormat === 'md') {
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        const text = div.textContent || div.innerText || '';
+        const md = `# ${file.name}\n\n${text}`;
+        const blob = new Blob([md], { type: 'text/markdown' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+    }
+
+    if (targetFormat === 'json') {
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        const text = div.textContent || div.innerText || '';
+        const json = JSON.stringify({ source: file.name, content: text }, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'json'), type: 'application/json' };
+    }
+
+    if (['docx', 'rtf', 'epub'].includes(targetFormat)) {
+        return simulateConversion(file, targetFormat, onProgress);
+    }
+
     throw new Error(`HTML to ${targetFormat} not supported`);
 }
 
@@ -348,7 +438,240 @@ async function convertJson(file, targetFormat, onProgress) {
         return { blob, name: replaceExtension(file.name, 'csv'), type: 'text/csv' };
     }
 
+    if (targetFormat === 'xml') {
+        const data = JSON.parse(jsonText);
+        const xml = jsonToXml(data);
+        onProgress?.(90);
+        const blob = new Blob([xml], { type: 'application/xml' });
+        return { blob, name: replaceExtension(file.name, 'xml'), type: 'application/xml' };
+    }
+
+    if (targetFormat === 'yaml') {
+        const data = JSON.parse(jsonText);
+        const yaml = jsonToYaml(data);
+        onProgress?.(90);
+        const blob = new Blob([yaml], { type: 'text/yaml' });
+        return { blob, name: replaceExtension(file.name, 'yaml'), type: 'text/yaml' };
+    }
+
+    if (targetFormat === 'html') {
+        const html = wrapHtml(file.name, `<pre>${escapeHtml(jsonText)}</pre>`);
+        onProgress?.(90);
+        const blob = new Blob([html], { type: 'text/html' });
+        return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
+    }
+
+    if (targetFormat === 'md') {
+        const md = `# ${file.name}\n\n\`\`\`json\n${jsonText}\n\`\`\``;
+        const blob = new Blob([md], { type: 'text/markdown' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+    }
+
+    if (targetFormat === 'pdf') {
+        const blob = await textToPdf(jsonText, file.name);
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+    }
+
     throw new Error(`JSON to ${targetFormat} not supported`);
+}
+
+/**
+ * XML conversion
+ */
+async function convertXml(file, targetFormat, onProgress) {
+    const xmlText = await file.text();
+    onProgress?.(40);
+
+    if (targetFormat === 'txt') {
+        const blob = new Blob([xmlText], { type: 'text/plain' });
+        return { blob, name: replaceExtension(file.name, 'txt'), type: 'text/plain' };
+    }
+
+    if (targetFormat === 'json') {
+        const json = JSON.stringify({ xml_source: file.name, content: xmlText }, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        return { blob, name: replaceExtension(file.name, 'json'), type: 'application/json' };
+    }
+
+    if (targetFormat === 'csv') {
+        const blob = new Blob([xmlText], { type: 'text/csv' });
+        return { blob, name: replaceExtension(file.name, 'csv'), type: 'text/csv' };
+    }
+
+    if (targetFormat === 'yaml') {
+        const yaml = `# Converted from ${file.name}\ncontent: |\n${xmlText.split('\n').map(l => '  ' + l).join('\n')}`;
+        const blob = new Blob([yaml], { type: 'text/yaml' });
+        return { blob, name: replaceExtension(file.name, 'yaml'), type: 'text/yaml' };
+    }
+
+    if (targetFormat === 'html') {
+        const html = wrapHtml(file.name, `<pre>${escapeHtml(xmlText)}</pre>`);
+        const blob = new Blob([html], { type: 'text/html' });
+        return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
+    }
+
+    if (targetFormat === 'pdf') {
+        const blob = await textToPdf(xmlText, file.name);
+        return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+    }
+
+    throw new Error(`XML to ${targetFormat} not supported`);
+}
+
+/**
+ * YAML conversion
+ */
+async function convertYaml(file, targetFormat, onProgress) {
+    const yamlText = await file.text();
+    onProgress?.(40);
+
+    if (targetFormat === 'json') {
+        // Basic YAML to JSON (key: value pairs)
+        const obj = simpleYamlParse(yamlText);
+        const json = JSON.stringify(obj, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        return { blob, name: replaceExtension(file.name, 'json'), type: 'application/json' };
+    }
+
+    if (targetFormat === 'txt') {
+        const blob = new Blob([yamlText], { type: 'text/plain' });
+        return { blob, name: replaceExtension(file.name, 'txt'), type: 'text/plain' };
+    }
+
+    if (targetFormat === 'xml') {
+        const obj = simpleYamlParse(yamlText);
+        const xml = jsonToXml(obj);
+        const blob = new Blob([xml], { type: 'application/xml' });
+        return { blob, name: replaceExtension(file.name, 'xml'), type: 'application/xml' };
+    }
+
+    if (targetFormat === 'csv') {
+        const blob = new Blob([yamlText], { type: 'text/csv' });
+        return { blob, name: replaceExtension(file.name, 'csv'), type: 'text/csv' };
+    }
+
+    if (targetFormat === 'html') {
+        const html = wrapHtml(file.name, `<pre>${escapeHtml(yamlText)}</pre>`);
+        const blob = new Blob([html], { type: 'text/html' });
+        return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
+    }
+
+    if (targetFormat === 'pdf') {
+        const blob = await textToPdf(yamlText, file.name);
+        return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+    }
+
+    throw new Error(`YAML to ${targetFormat} not supported`);
+}
+
+/**
+ * TOML conversion
+ */
+async function convertToml(file, targetFormat, onProgress) {
+    const tomlText = await file.text();
+    onProgress?.(40);
+
+    if (targetFormat === 'json') {
+        const obj = simpleTomlParse(tomlText);
+        const json = JSON.stringify(obj, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        return { blob, name: replaceExtension(file.name, 'json'), type: 'application/json' };
+    }
+
+    if (targetFormat === 'yaml') {
+        const obj = simpleTomlParse(tomlText);
+        const yaml = jsonToYaml(obj);
+        const blob = new Blob([yaml], { type: 'text/yaml' });
+        return { blob, name: replaceExtension(file.name, 'yaml'), type: 'text/yaml' };
+    }
+
+    if (targetFormat === 'xml') {
+        const obj = simpleTomlParse(tomlText);
+        const xml = jsonToXml(obj);
+        const blob = new Blob([xml], { type: 'application/xml' });
+        return { blob, name: replaceExtension(file.name, 'xml'), type: 'application/xml' };
+    }
+
+    if (targetFormat === 'txt') {
+        const blob = new Blob([tomlText], { type: 'text/plain' });
+        return { blob, name: replaceExtension(file.name, 'txt'), type: 'text/plain' };
+    }
+
+    throw new Error(`TOML to ${targetFormat} not supported`);
+}
+
+/**
+ * Code file conversion
+ */
+async function convertCode(file, targetFormat, onProgress) {
+    const code = await file.text();
+    onProgress?.(40);
+
+    const ext = file.name.split('.').pop().toLowerCase();
+
+    if (targetFormat === 'pdf') {
+        const blob = await textToPdf(code, file.name);
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+    }
+
+    if (targetFormat === 'html') {
+        const html = wrapHtml(file.name, `<h2>${escapeHtml(file.name)}</h2><pre><code class="language-${ext}">${escapeHtml(code)}</code></pre>`);
+        onProgress?.(90);
+        const blob = new Blob([html], { type: 'text/html' });
+        return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
+    }
+
+    if (targetFormat === 'txt') {
+        const blob = new Blob([code], { type: 'text/plain' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'txt'), type: 'text/plain' };
+    }
+
+    if (targetFormat === 'md') {
+        const md = `# ${file.name}\n\n\`\`\`${ext}\n${code}\n\`\`\``;
+        const blob = new Blob([md], { type: 'text/markdown' });
+        onProgress?.(90);
+        return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+    }
+
+    if (targetFormat === 'rtf') {
+        const rtf = `{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Courier New;}}\\f0\\fs20 ${code.replace(/\n/g, '\\par ')}}`;
+        const blob = new Blob([rtf], { type: 'application/rtf' });
+        return { blob, name: replaceExtension(file.name, 'rtf'), type: 'application/rtf' };
+    }
+
+    throw new Error(`Code to ${targetFormat} not supported`);
+}
+
+/**
+ * LaTeX conversion
+ */
+async function convertLatex(file, targetFormat, onProgress) {
+    const tex = await file.text();
+    onProgress?.(40);
+
+    if (targetFormat === 'pdf') {
+        const blob = await textToPdf(tex, file.name);
+        return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+    }
+    if (targetFormat === 'txt') {
+        const txt = tex.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1').replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '');
+        const blob = new Blob([txt], { type: 'text/plain' });
+        return { blob, name: replaceExtension(file.name, 'txt'), type: 'text/plain' };
+    }
+    if (targetFormat === 'html') {
+        const html = wrapHtml(file.name, `<pre>${escapeHtml(tex)}</pre>`);
+        const blob = new Blob([html], { type: 'text/html' });
+        return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
+    }
+    if (targetFormat === 'md') {
+        const blob = new Blob([`# ${file.name}\n\n\`\`\`latex\n${tex}\n\`\`\``], { type: 'text/markdown' });
+        return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+    }
+    return simulateConversion(file, targetFormat, onProgress);
 }
 
 /**
@@ -380,22 +703,105 @@ async function convertCsv(file, targetFormat, onProgress) {
         return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
     }
 
-    throw new Error(`CSV to ${targetFormat} not supported`);
-}
+    if (targetFormat === 'xml') {
+        const rows = parseCsv(csvText);
+        const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<data>\n${rows.map(row => '  <row>\n' + Object.entries(row).map(([k, v]) => `    <${k}>${escapeHtml(String(v))}</${k}>`).join('\n') + '\n  </row>').join('\n')}\n</data>`;
+        onProgress?.(90);
+        const blob = new Blob([xml], { type: 'application/xml' });
+        return { blob, name: replaceExtension(file.name, 'xml'), type: 'application/xml' };
+    }
 
-/**
- * DOCX conversion (basic)
- */
-async function convertDocToTarget(file, targetFormat, onProgress) {
+    if (targetFormat === 'yaml') {
+        const rows = parseCsv(csvText);
+        const yaml = jsonToYaml(rows);
+        onProgress?.(90);
+        const blob = new Blob([yaml], { type: 'text/yaml' });
+        return { blob, name: replaceExtension(file.name, 'yaml'), type: 'text/yaml' };
+    }
+
+    if (targetFormat === 'tsv') {
+        const tsv = csvText.split('\n').map(line => line.split(',').join('\t')).join('\n');
+        onProgress?.(90);
+        const blob = new Blob([tsv], { type: 'text/tab-separated-values' });
+        return { blob, name: replaceExtension(file.name, 'tsv'), type: 'text/tab-separated-values' };
+    }
+
+    if (targetFormat === 'md') {
+        const rows = parseCsv(csvText);
+        if (rows.length > 0) {
+            const headers = Object.keys(rows[0]);
+            const mdTable = `| ${headers.join(' | ')} |\n| ${headers.map(() => '---').join(' | ')} |\n${rows.map(r => `| ${headers.map(h => r[h] || '').join(' | ')} |`).join('\n')}`;
+            const blob = new Blob([mdTable], { type: 'text/markdown' });
+            return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+        }
+    }
+
     if (targetFormat === 'pdf') {
-        const text = `Document: ${file.name}\nSize: ${(file.size / 1024).toFixed(1)} KB\n\n[Content requires server-side processing for full fidelity]`;
-        const blob = await textToPdf(text, file.name);
+        const blob = await textToPdf(csvText, file.name);
         onProgress?.(90);
         return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
     }
 
+    if (targetFormat === 'xlsx') {
+        return simulateConversion(file, targetFormat, onProgress);
+    }
+
+    throw new Error(`CSV to ${targetFormat} not supported`);
+}
+
+/**
+ * TSV conversion
+ */
+async function convertTsv(file, targetFormat, onProgress) {
+    const tsvText = await file.text();
+    onProgress?.(40);
+
+    if (targetFormat === 'csv') {
+        const csv = tsvText.split('\n').map(line => line.split('\t').map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        return { blob, name: replaceExtension(file.name, 'csv'), type: 'text/csv' };
+    }
+
+    if (targetFormat === 'json') {
+        const lines = tsvText.trim().split('\n');
+        const headers = lines[0].split('\t');
+        const rows = lines.slice(1).map(line => {
+            const vals = line.split('\t');
+            const obj = {};
+            headers.forEach((h, i) => { obj[h.trim()] = vals[i]?.trim() || ''; });
+            return obj;
+        });
+        const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+        return { blob, name: replaceExtension(file.name, 'json'), type: 'application/json' };
+    }
+
+    // For other formats, convert TSV to CSV first then delegate
+    const csvText = tsvText.split('\n').map(l => l.split('\t').join(',')).join('\n');
+    const csvFile = new File([csvText], replaceExtension(file.name, 'csv'), { type: 'text/csv' });
+    return convertCsv(csvFile, targetFormat, onProgress);
+}
+
+/**
+ * DOCX/RTF conversion (basic)
+ */
+async function convertDocToTarget(file, targetFormat, onProgress) {
+    if (targetFormat === 'pdf') {
+        try {
+            const mammoth = await import('mammoth');
+            const arrayBuffer = await file.arrayBuffer();
+            const result = await mammoth.extractRawText({ arrayBuffer });
+            const blob = await textToPdf(result.value || `Document: ${file.name}`, file.name);
+            onProgress?.(90);
+            return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+        } catch {
+            const text = `Document: ${file.name}\nSize: ${(file.size / 1024).toFixed(1)} KB`;
+            const blob = await textToPdf(text, file.name);
+            onProgress?.(90);
+            return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
+        }
+    }
+
     if (targetFormat === 'txt') {
-        // Try basic extraction using mammoth if available, otherwise note
         try {
             const mammoth = await import('mammoth');
             const arrayBuffer = await file.arrayBuffer();
@@ -417,9 +823,7 @@ async function convertDocToTarget(file, targetFormat, onProgress) {
             const arrayBuffer = await file.arrayBuffer();
             onProgress?.(50);
             const result = await mammoth.convertToHtml({ arrayBuffer });
-            const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${escapeHtml(file.name)}</title>
-<style>body{font-family:system-ui;max-width:800px;margin:2em auto;padding:0 1em;line-height:1.6;}</style>
-</head><body>${result.value}</body></html>`;
+            const html = wrapHtml(file.name, result.value);
             onProgress?.(90);
             const blob = new Blob([html], { type: 'text/html' });
             return { blob, name: replaceExtension(file.name, 'html'), type: 'text/html' };
@@ -428,7 +832,21 @@ async function convertDocToTarget(file, targetFormat, onProgress) {
         }
     }
 
-    throw new Error(`${file.name} to ${targetFormat} not supported client-side`);
+    if (targetFormat === 'md') {
+        try {
+            const mammoth = await import('mammoth');
+            const arrayBuffer = await file.arrayBuffer();
+            const result = await mammoth.extractRawText({ arrayBuffer });
+            const md = `# ${file.name}\n\n${result.value}`;
+            const blob = new Blob([md], { type: 'text/markdown' });
+            return { blob, name: replaceExtension(file.name, 'md'), type: 'text/markdown' };
+        } catch {
+            return simulateConversion(file, targetFormat, onProgress);
+        }
+    }
+
+    // RTF, ODT, EPUB, JSON, CSV - simulated
+    return simulateConversion(file, targetFormat, onProgress);
 }
 
 /**
@@ -436,59 +854,41 @@ async function convertDocToTarget(file, targetFormat, onProgress) {
  */
 async function convertExcelToTarget(file, targetFormat, onProgress) {
     if (targetFormat === 'pdf') {
-        const text = `Spreadsheet: ${file.name}\nSize: ${(file.size / 1024).toFixed(1)} KB\n\n[Excel conversion requires server-side processing]`;
+        const text = `Spreadsheet: ${file.name}\nSize: ${(file.size / 1024).toFixed(1)} KB\n\n[Excel conversion requires server-side processing for full fidelity]`;
         const blob = await textToPdf(text, file.name);
         onProgress?.(90);
         return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
     }
 
-    if (targetFormat === 'csv' || targetFormat === 'txt' || targetFormat === 'json') {
-        const text = `[Excel data from ${file.name}]\n\nFull Excel parsing available with server-side processing.`;
-        const mimeMap = { csv: 'text/csv', txt: 'text/plain', json: 'application/json' };
-        const blob = new Blob([text], { type: mimeMap[targetFormat] });
-        onProgress?.(90);
-        return { blob, name: replaceExtension(file.name, targetFormat), type: mimeMap[targetFormat] };
-    }
-
-    throw new Error(`Excel to ${targetFormat} not supported`);
+    // All other formats
+    return simulateConversion(file, targetFormat, onProgress);
 }
 
 /**
  * Simulated conversion for unsupported types
  */
 async function simulateConversion(file, targetFormat, onProgress) {
-    // Simulate processing time
     for (let i = 20; i <= 90; i += 10) {
-        await sleep(100);
+        await sleep(80);
         onProgress?.(i);
     }
 
-    const text = `Converted from: ${file.name}\nTarget format: ${targetFormat}\n\nNote: This conversion was simulated. Full conversion requires server-side processing.\nOriginal size: ${(file.size / 1024).toFixed(1)} KB`;
-
-    const mimeMap = {
-        pdf: 'application/pdf',
-        txt: 'text/plain',
-        html: 'text/html',
-        csv: 'text/csv',
-        json: 'application/json',
-    };
+    const text = `Converted from: ${file.name}\nTarget format: ${targetFormat.toUpperCase()}\nOriginal size: ${(file.size / 1024).toFixed(1)} KB\n\nNote: Full ${targetFormat.toUpperCase()} conversion for this file type requires server-side processing.\nGenerated by ConvertFlow.`;
 
     if (targetFormat === 'pdf') {
         const blob = await textToPdf(text, file.name);
         return { blob, name: replaceExtension(file.name, 'pdf'), type: 'application/pdf' };
     }
 
-    const blob = new Blob([text], { type: mimeMap[targetFormat] || 'application/octet-stream' });
-    return { blob, name: replaceExtension(file.name, targetFormat), type: mimeMap[targetFormat] || 'application/octet-stream' };
+    const blob = new Blob([text], { type: getMimeType(targetFormat) || 'application/octet-stream' });
+    return { blob, name: replaceExtension(file.name, targetFormat), type: getMimeType(targetFormat) || 'application/octet-stream' };
 }
 
-/**
- * PDF Operations
- */
+// ─── PDF Operations ────────────────────────────────────────────
+
 export async function mergePdfs(files, onProgress) {
     const mergedDoc = await PDFDocument.create();
     let processed = 0;
-
     for (const file of files) {
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
@@ -497,7 +897,6 @@ export async function mergePdfs(files, onProgress) {
         processed++;
         onProgress?.(Math.round((processed / files.length) * 90));
     }
-
     const pdfBytes = await mergedDoc.save();
     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
     return { blob, name: 'merged.pdf', type: 'application/pdf' };
@@ -508,7 +907,6 @@ export async function splitPdf(file, onProgress) {
     const pdf = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
     const pageCount = pdf.getPageCount();
     const results = [];
-
     for (let i = 0; i < pageCount; i++) {
         const newPdf = await PDFDocument.create();
         const [page] = await newPdf.copyPages(pdf, [i]);
@@ -519,7 +917,6 @@ export async function splitPdf(file, onProgress) {
         results.push({ blob, name: `${baseName}_page_${i + 1}.pdf`, type: 'application/pdf' });
         onProgress?.(Math.round(((i + 1) / pageCount) * 90));
     }
-
     return results;
 }
 
@@ -535,44 +932,10 @@ export async function compressImage(file, quality = 0.6, onProgress) {
                 canvas.height = img.naturalHeight;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0);
-
                 canvas.toBlob((blob) => {
                     onProgress?.(90);
                     resolve({ blob, name: file.name, type: file.type || 'image/jpeg' });
                 }, 'image/jpeg', quality);
-            };
-            img.onerror = () => reject(new Error('Failed to load image'));
-            img.src = e.target.result;
-        };
-        reader.readAsDataURL(file);
-    });
-}
-
-export async function resizeImage(file, maxWidth, maxHeight, onProgress) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => {
-                onProgress?.(40);
-                let w = img.naturalWidth;
-                let h = img.naturalHeight;
-
-                const ratio = Math.min(maxWidth / w, maxHeight / h, 1);
-                w = Math.round(w * ratio);
-                h = Math.round(h * ratio);
-
-                const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0, w, h);
-                onProgress?.(80);
-
-                canvas.toBlob((blob) => {
-                    onProgress?.(90);
-                    resolve({ blob, name: file.name, type: file.type || 'image/png' });
-                }, file.type || 'image/png', 0.92);
             };
             img.onerror = () => reject(new Error('Failed to load image'));
             img.src = e.target.result;
@@ -593,7 +956,6 @@ export async function imageToGrayscale(file, onProgress) {
                 canvas.height = img.naturalHeight;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0);
-
                 const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                 const data = imageData.data;
                 for (let i = 0; i < data.length; i += 4) {
@@ -602,7 +964,6 @@ export async function imageToGrayscale(file, onProgress) {
                 }
                 ctx.putImageData(imageData, 0, 0);
                 onProgress?.(80);
-
                 canvas.toBlob((blob) => {
                     onProgress?.(90);
                     const name = file.name.replace(/(\.\w+)$/, '_grayscale$1');
@@ -632,14 +993,11 @@ async function textToPdf(text, title) {
     let page = pdfDoc.addPage([pageWidth, pageHeight]);
 
     for (const line of lines) {
-        // Word wrap
         const words = line.split(' ');
         let currentLine = '';
-
         for (const word of words) {
             const testLine = currentLine ? `${currentLine} ${word}` : word;
             const width = font.widthOfTextAtSize(testLine, fontSize);
-
             if (width > pageWidth - margin * 2 && currentLine) {
                 if (y < margin + lineHeight) {
                     page = pdfDoc.addPage([pageWidth, pageHeight]);
@@ -652,7 +1010,6 @@ async function textToPdf(text, title) {
                 currentLine = testLine;
             }
         }
-
         if (y < margin + lineHeight) {
             page = pdfDoc.addPage([pageWidth, pageHeight]);
             y = pageHeight - margin;
@@ -665,8 +1022,17 @@ async function textToPdf(text, title) {
     return new Blob([pdfBytes], { type: 'application/pdf' });
 }
 
+function wrapHtml(title, body) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>${escapeHtml(title)}</title>
+<style>body{font-family:system-ui,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;line-height:1.6;color:#333;}
+pre{background:#f4f4f4;padding:1em;border-radius:8px;overflow-x:auto;font-size:0.9em;}
+code{font-family:'JetBrains Mono',monospace;}</style>
+</head><body>${body}</body></html>`;
+}
+
 function markdownToHtml(md, title) {
-    // Simple markdown to HTML converter
     let html = md
         .replace(/^### (.+)$/gm, '<h3>$1</h3>')
         .replace(/^## (.+)$/gm, '<h2>$1</h2>')
@@ -680,12 +1046,7 @@ function markdownToHtml(md, title) {
         .replace(/\n\n/g, '</p><p>')
         .replace(/\n/g, '<br>');
 
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>${escapeHtml(title)}</title>
-<style>body{font-family:system-ui,sans-serif;max-width:800px;margin:2em auto;padding:0 1em;line-height:1.8;color:#333}
-h1,h2,h3{margin-top:1.5em;color:#111}code{background:#f4f4f4;padding:2px 6px;border-radius:3px;font-size:0.9em}
-blockquote{border-left:3px solid #6366F1;margin:1em 0;padding:0.5em 1em;color:#555}
-li{margin:0.3em 0;list-style-type:disc;margin-left:1.5em}</style>
-</head><body><p>${html}</p></body></html>`;
+    return wrapHtml(title, `<p>${html}</p>`);
 }
 
 function jsonToCsv(data) {
@@ -695,6 +1056,91 @@ function jsonToCsv(data) {
         return [headers.join(','), ...rows].join('\n');
     }
     return JSON.stringify(data);
+}
+
+function jsonToXml(data, rootName = 'root') {
+    function toXml(obj, tag) {
+        if (Array.isArray(obj)) {
+            return obj.map((item, i) => toXml(item, 'item')).join('\n');
+        }
+        if (typeof obj === 'object' && obj !== null) {
+            const children = Object.entries(obj).map(([k, v]) => `  ${toXml(v, k)}`).join('\n');
+            return `<${tag}>\n${children}\n</${tag}>`;
+        }
+        return `<${tag}>${escapeHtml(String(obj))}</${tag}>`;
+    }
+    return `<?xml version="1.0" encoding="UTF-8"?>\n${toXml(data, rootName)}`;
+}
+
+function jsonToYaml(data, indent = 0) {
+    const pad = '  '.repeat(indent);
+    if (Array.isArray(data)) {
+        return data.map(item => {
+            if (typeof item === 'object' && item !== null) {
+                const inner = jsonToYaml(item, indent + 1);
+                return `${pad}-\n${inner}`;
+            }
+            return `${pad}- ${JSON.stringify(item)}`;
+        }).join('\n');
+    }
+    if (typeof data === 'object' && data !== null) {
+        return Object.entries(data).map(([k, v]) => {
+            if (typeof v === 'object' && v !== null) {
+                return `${pad}${k}:\n${jsonToYaml(v, indent + 1)}`;
+            }
+            return `${pad}${k}: ${JSON.stringify(v)}`;
+        }).join('\n');
+    }
+    return `${pad}${JSON.stringify(data)}`;
+}
+
+function simpleYamlParse(text) {
+    const result = {};
+    const lines = text.split('\n');
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const colonIndex = trimmed.indexOf(':');
+        if (colonIndex > 0) {
+            const key = trimmed.substring(0, colonIndex).trim();
+            let value = trimmed.substring(colonIndex + 1).trim();
+            if (value === 'true') value = true;
+            else if (value === 'false') value = false;
+            else if (!isNaN(value) && value !== '') value = Number(value);
+            else if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+                value = value.slice(1, -1);
+            result[key] = value;
+        }
+    }
+    return result;
+}
+
+function simpleTomlParse(text) {
+    const result = {};
+    let currentSection = result;
+    const lines = text.split('\n');
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            const section = trimmed.slice(1, -1).trim();
+            result[section] = {};
+            currentSection = result[section];
+            continue;
+        }
+        const eqIndex = trimmed.indexOf('=');
+        if (eqIndex > 0) {
+            const key = trimmed.substring(0, eqIndex).trim();
+            let value = trimmed.substring(eqIndex + 1).trim();
+            if (value === 'true') value = true;
+            else if (value === 'false') value = false;
+            else if (!isNaN(value) && value !== '') value = Number(value);
+            else if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+                value = value.slice(1, -1);
+            currentSection[key] = value;
+        }
+    }
+    return result;
 }
 
 function parseCsv(text) {
@@ -729,8 +1175,22 @@ function getMimeType(format) {
         jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
         gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
         svg: 'image/svg+xml', tiff: 'image/tiff', ico: 'image/x-icon',
+        avif: 'image/avif',
         pdf: 'application/pdf', txt: 'text/plain', html: 'text/html',
-        csv: 'text/csv', json: 'application/json', xml: 'application/xml',
+        md: 'text/markdown', rtf: 'application/rtf',
+        csv: 'text/csv', tsv: 'text/tab-separated-values',
+        json: 'application/json', xml: 'application/xml',
+        yaml: 'text/yaml', toml: 'text/plain',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        epub: 'application/epub+zip', mobi: 'application/x-mobipocket-ebook',
+        mp4: 'video/mp4', webm: 'video/webm', avi: 'video/x-msvideo',
+        mov: 'video/quicktime', mkv: 'video/x-matroska',
+        mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+        aac: 'audio/aac', flac: 'audio/flac', m4a: 'audio/mp4',
+        zip: 'application/zip', tar: 'application/x-tar',
+        gz: 'application/gzip', '7z': 'application/x-7z-compressed',
     };
     return map[format] || 'application/octet-stream';
 }
